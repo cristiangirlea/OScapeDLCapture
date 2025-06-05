@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.31)
+cmake_minimum_required(VERSION 3.14)
 project(CustomDLL)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -23,7 +23,43 @@ add_definitions(
 )
 
 # Find required packages
-find_package(CURL REQUIRED)
+# First try to find system-installed CURL
+find_package(CURL QUIET)
+
+# If CURL is not found, download and build it
+if(NOT CURL_FOUND)
+    message(STATUS "CURL not found on system. Will download and build it.")
+    include(FetchContent)
+    FetchContent_Declare(
+        curl
+        URL https://github.com/curl/curl/releases/download/curl-8_4_0/curl-8.4.0.tar.gz
+        URL_HASH SHA256=816e41809c043ff285e8c0f06a75a1fa250211bbfb2dc0a037eeef39f1a9e427
+    )
+
+    # Configure curl build options
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
+    set(HTTP_ONLY ON CACHE BOOL "" FORCE)
+    set(CMAKE_USE_OPENSSL OFF CACHE BOOL "" FORCE)
+    set(CMAKE_USE_LIBSSH2 OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+
+    FetchContent_MakeAvailable(curl)
+
+    # Set variables to make it compatible with find_package(CURL)
+    set(CURL_FOUND TRUE)
+    set(CURL_INCLUDE_DIRS ${curl_SOURCE_DIR}/include)
+    set(CURL_LIBRARIES libcurl)
+
+    # Create a custom target that mimics the CURL::libcurl imported target
+    if(NOT TARGET CURL::libcurl)
+        add_library(CURL::libcurl INTERFACE IMPORTED)
+        set_target_properties(CURL::libcurl PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${CURL_INCLUDE_DIRS}"
+            INTERFACE_LINK_LIBRARIES "${CURL_LIBRARIES}"
+        )
+    endif()
+endif()
 
 # Platform-specific settings
 if(WIN32)
@@ -38,10 +74,12 @@ add_definitions(-DDLL_EXTENSION="${DLL_EXTENSION}")
 # Build the standard version with runtime configuration support
 add_library(CustomDLL SHARED src/custom.cpp)
 target_link_libraries(CustomDLL PRIVATE CURL::libcurl)
+set_target_properties(CustomDLL PROPERTIES PREFIX "")
 
 # Build the static configuration version (no runtime config.ini)
 add_library(CustomDLLStatic SHARED src/custom_static.cpp)
 target_link_libraries(CustomDLLStatic PRIVATE CURL::libcurl)
+set_target_properties(CustomDLLStatic PROPERTIES PREFIX "")
 
 # Build the test server
 add_executable(TestServer src/server.cpp)

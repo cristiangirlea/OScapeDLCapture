@@ -7,21 +7,23 @@
 #include <sstream>
 #include <chrono>
 #include <thread>
+#include <algorithm>
 
-// Platform-specific includes for DLL loading
+// Platform-specific includes for DLL loading and networking
 #ifdef _WIN32
+#include <winsock2.h>  // Include winsock2.h before windows.h to avoid warnings
+#include <ws2tcpip.h>
 #include <windows.h>
 #define DLL_EXTENSION ".dll"
+#pragma comment(lib, "ws2_32.lib")
 #else
 #include <dlfcn.h>
 #define DLL_EXTENSION ".so"
 #endif
 
-// Platform-specific includes for HTTP client
+// Additional platform-specific includes for HTTP client
 #ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
+// Winsock headers already included above
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>

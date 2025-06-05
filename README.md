@@ -13,6 +13,7 @@ The DLL receives key/value input parameters, performs an HTTP GET request to a c
   - [Test Client](#test-client)
   - [Go Server](#go-server)
   - [Contact Center Simulator](#contact-center-simulator)
+- [Testing Guide](#testing-guide)
 - [Technical Details](#technical-details)
   - [Function Signature](#function-signature)
   - [Request Behavior](#request-behavior)
@@ -30,16 +31,49 @@ The DLL receives key/value input parameters, performs an HTTP GET request to a c
 - [Additional Notes](#additional-notes)
   - [Character Encoding](#character-encoding)
   - [Build Notes](#build-notes)
+- [Troubleshooting](#troubleshooting)
+  - [DLL Function Issues](#dll-function-issues)
+  - [CURL Library Not Found](#curl-library-not-found)
+  - [Compiler Not Found](#compiler-not-found)
+  - [Build Fails with Ninja](#build-fails-with-ninja)
 
 ## 🚀 Quick Start
 
 ### Step 1: Prerequisites
 
-- **Windows**: Visual Studio or Visual Studio Build Tools with C++ support
-- **Linux/macOS**: GCC/Clang with C++ support
-- CMake (version 3.10 or higher)
-- libcurl development libraries
-- (Optional) Go compiler (for Go server and Contact Center simulator)
+#### For Running the DLL
+- Windows operating system
+- The compiled DLL files (CustomDLL.dll or CustomDLLStatic.dll)
+- (Optional) Configuration file (config.ini) for the runtime-configurable version
+
+#### For Building the Project
+- **Windows**: One of the following C/C++ compilers:
+  - Visual Studio or Visual Studio Build Tools with C++ support (recommended)
+  - MinGW-w64 with GCC
+  - MSYS2 with GCC
+  - Clang
+- **Build tools**:
+  - CMake (version 3.14 or higher)
+  - One of the following build systems:
+    - Visual Studio's MSBuild (included with Visual Studio)
+    - Ninja (fastest, automatically used if CLion is installed)
+    - MinGW's mingw32-make
+    - MSYS2's make
+    - NMake (included with Visual Studio Build Tools)
+- **Libraries**:
+  - libcurl development libraries (required for HTTP requests)
+    - For Visual Studio: Install vcpkg and run `vcpkg install curl:x64-windows`
+    - For MinGW/MSYS2: Run `pacman -S mingw-w64-x86_64-curl`
+    - For CLion: Install using the bundled package manager or manually add to your toolchain
+- **Optional**:
+  - Go compiler (for Go server and Contact Center simulator)
+
+**Important Notes**:
+- Visual Studio is NOT required to run the DLL, only for building it.
+- The build script will automatically detect available build tools and use the most appropriate one.
+- If you have CLion installed, the script will use CLion's bundled Ninja and compiler.
+- If you encounter "No CMAKE_C_COMPILER could be found" errors, you need to install a C/C++ compiler.
+- If you encounter "Could NOT find CURL" errors, you need to install the libcurl development libraries (see above).
 
 ### Step 2: Building the Project
 
@@ -223,31 +257,83 @@ A web-based simulator is provided to test the DLL in a way that mimics how OpenS
 Then run it:
 
 ```bash
-# Windows
+# Windows - Using runtime DLL (default)
 dist\tools\ContactCenterSimulator.exe
 
-# Linux/macOS
+# Windows - Using static DLL
+dist\tools\ContactCenterSimulator.exe -static
+
+# Windows - Using a different port (if 8080 is already in use)
+dist\tools\ContactCenterSimulator.exe -port 8081
+
+# Linux/macOS - Using runtime DLL (default)
 ./dist/tools/ContactCenterSimulator
+
+# Linux/macOS - Using static DLL
+./dist/tools/ContactCenterSimulator -static
+
+# Linux/macOS - Using a different port (if 8080 is already in use)
+./dist/tools/ContactCenterSimulator -port 8081
 ```
 
-The simulator provides a web interface (accessible at http://localhost:8080 by default) that allows you to:
+You can also specify a custom DLL path:
+
+```bash
+# Windows
+dist\tools\ContactCenterSimulator.exe -dll path\to\your\custom.dll
+
+# Linux/macOS
+./dist/tools/ContactCenterSimulator -dll path/to/your/custom.dll
+```
+
+Multiple flags can be combined:
+
+```bash
+# Windows - Using static DLL on port 8081
+dist\tools\ContactCenterSimulator.exe -static -port 8081
+
+# Linux/macOS - Using custom DLL on port 8081
+./dist/tools/ContactCenterSimulator -dll path/to/your/custom.dll -port 8081
+```
+
+The simulator provides a web interface (accessible at http://localhost:8080 by default, or http://localhost:PORT if you specified a different port) that allows you to:
 
 1. Create test cases with custom parameters
 2. Use preset test cases for common scenarios
 3. View the formatted input and output buffers
 4. See the DLL's response
 
+## 🧪 Testing Guide
+
+For detailed instructions on how to test if the Go Server and Contact Center Simulator are working correctly, please refer to the [Testing Guide](TESTING.md). This guide provides:
+
+- Step-by-step instructions for testing each component
+- Verification procedures to ensure everything is working correctly
+- Troubleshooting tips for common issues
+- Examples of expected outputs and behaviors
+
 ## 📝 Technical Details
 
-### Function Signature
+### Function Signatures
 
 ```cpp
+// Main function to process requests
 extern "C" __declspec(dllexport)
 long CustomFunctionExample(const char* dataIn, char* dataOut);
+
+// Function to get the last error message
+extern "C" __declspec(dllexport)
+const char* GetLastErrorMessage();
 ```
 
+#### CustomFunctionExample
 - `dataIn`: Input buffer containing encoded key/value pairs
 - `dataOut`: Output buffer to store returned key/value response (if `CFResp=yes` is included)
+- Returns: Error code (0 for success, non-zero for failure)
+
+#### GetLastErrorMessage
+- Returns: Pointer to a null-terminated string containing the last error message
+- Call this function after CustomFunctionExample returns a non-zero error code to get detailed error information
 
 ### Request Behavior
 
@@ -311,8 +397,15 @@ Only returned if a `CFResp=yes` field exists in the input.
 
 ### Return Codes
 
-- `0` → Success
-- Any other value → Treated as failure by Contact Center
+- `0` → Success (SUCCESS)
+- `1` → Invalid input parameters (INVALID_INPUT)
+- `2` → Too many parameters (TOO_MANY_PARAMETERS)
+- `3` → CURL initialization failed (CURL_INIT_FAILED)
+- `4` → CURL request failed (CURL_REQUEST_FAILED)
+- `5` → HTTP error (HTTP_ERROR)
+- `6` → Unexpected exception (UNEXPECTED_EXCEPTION)
+
+Any non-zero value is treated as a failure by Contact Center. For detailed information about error codes and messages, see the [Debugging Guide](DEBUG.md).
 
 ## ⚙️ Configuration
 
@@ -372,6 +465,37 @@ A PowerShell build script (`scripts\build.ps1`) is provided for Windows:
 # Build with Go server (requires Go to be installed)
 .\scripts\build.ps1 -BuildGoServer
 ```
+
+#### Alternative Build Tools for Windows
+
+The build script automatically detects available build tools and uses the most appropriate one in this order:
+
+1. **Visual Studio** (recommended if available)
+   - Provides the best debugging experience and IDE integration
+   - Supports both 32-bit and 64-bit builds
+
+2. **Ninja**
+   - Fastest build times
+   - Automatically used if CLion is installed (CLion bundles Ninja)
+   - Otherwise, install with: `choco install ninja` or download from https://ninja-build.org/
+
+3. **MinGW**
+   - GNU compiler collection for Windows
+   - Install with: `choco install mingw` or download from https://www.mingw-w64.org/
+   - Make sure `mingw32-make` is in your PATH
+
+4. **MSYS2**
+   - Unix-like development environment for Windows
+   - Install from https://www.msys2.org/
+   - Run `pacman -S mingw-w64-x86_64-toolchain` to install the toolchain
+   - Make sure `make` is in your PATH
+
+5. **NMake**
+   - Comes with Visual Studio but can be used without the full IDE
+   - Install Visual Studio Build Tools from https://visualstudio.microsoft.com/downloads/
+   - Make sure `nmake` is in your PATH
+
+No special command-line options are needed to use these alternative build tools - the script automatically detects what's available and uses the best option.
 
 ### Linux/macOS (Bash)
 
@@ -447,3 +571,125 @@ DLL is generated in:
 ```
 <build_dir>/bin/CustomDLL.dll
 ```
+
+## 🔧 Troubleshooting
+
+### DLL Function Issues
+
+If you're experiencing issues with the DLL function returning error codes or not behaving as expected, please refer to the [Debugging Guide](DEBUG.md) for detailed instructions on:
+
+- Using the built-in debugging tools
+- Diagnosing common issues
+- Tracing DLL function calls
+- Fixing configuration problems
+
+The Contact Center Simulator includes several debugging features that can help identify and resolve issues with the DLL.
+
+### CURL Library Not Found
+
+If you encounter the following error during the build process:
+
+```
+CMake Error: Could NOT find CURL (missing: CURL_LIBRARY CURL_INCLUDE_DIR)
+```
+
+This means that CMake cannot find the libcurl development libraries. 
+
+**Note: As of the latest update, the build system will automatically download and build cURL if it's not found on your system.** This means you can usually ignore this error and continue with the build, as the system will handle it for you.
+
+If you prefer to install cURL manually (which may provide better performance), you can use one of the following methods:
+
+#### For Visual Studio Users:
+1. Install vcpkg:
+   ```powershell
+   git clone https://github.com/Microsoft/vcpkg.git
+   cd vcpkg
+   .\bootstrap-vcpkg.bat
+   ```
+2. Install curl:
+   ```powershell
+   .\vcpkg install curl:x64-windows
+   ```
+3. Integrate with CMake:
+   ```powershell
+   .\vcpkg integrate install
+   ```
+4. Run the build script again
+
+#### For MinGW/MSYS2 Users:
+1. Open MSYS2 terminal
+2. Install curl:
+   ```bash
+   pacman -S mingw-w64-x86_64-curl
+   ```
+3. Make sure the MinGW bin directory is in your PATH
+4. Run the build script again
+
+#### For CLion Users with Bundled MinGW:
+1. If you're using CLion's bundled MinGW (which is common), you'll need to install MSYS2 to get the curl libraries:
+   - Download and install MSYS2 from https://www.msys2.org/
+   - Open MSYS2 MinGW 64-bit terminal
+   - Update the package database:
+     ```bash
+     pacman -Syu
+     ```
+   - Install curl development libraries:
+     ```bash
+     pacman -S mingw-w64-x86_64-curl
+     ```
+2. Add the MSYS2 MinGW bin directory to your PATH:
+   - Typically located at `C:\msys64\mingw64\bin`
+   - Add this to your system PATH environment variable
+3. In CLion, go to File > Settings > Build, Execution, Deployment > Toolchains
+4. Make sure your MinGW toolchain is configured correctly:
+   - If using CLion's bundled MinGW, it should be detected automatically
+   - If using MSYS2's MinGW, set the MinGW Home to your MSYS2 MinGW directory (e.g., `C:\msys64\mingw64`)
+5. Run the build script again
+
+#### Alternative Method for CLion Users:
+1. Open CLion
+2. Go to File > Settings > Build, Execution, Deployment > Toolchains
+3. Make sure your toolchain has curl installed
+4. If not, install it using the package manager for your toolchain
+5. Run the build script again
+
+### Compiler Not Found
+
+If you encounter the following error during the build process:
+
+```
+CMake Error: No CMAKE_C_COMPILER could be found
+CMake Error: No CMAKE_CXX_COMPILER could be found
+```
+
+This means that CMake cannot find a C/C++ compiler. To fix this:
+
+1. Make sure you have a C/C++ compiler installed (Visual Studio, MinGW, MSYS2, or Clang)
+2. Make sure the compiler is in your PATH
+3. If using Visual Studio, make sure the "Desktop development with C++" workload is installed
+4. If using MinGW or MSYS2, make sure the bin directory is in your PATH
+5. Run the build script again
+
+### Build Fails with Ninja
+
+If you're using Ninja and the build fails with errors, try the following:
+
+1. Make sure you have the Visual C++ Redistributable installed:
+   - Download from: https://aka.ms/vs/17/release/vc_redist.x64.exe
+   - Install and restart your computer
+
+2. If you're using CLion's bundled Ninja, make sure you also have a compatible compiler:
+   - Open CLion
+   - Go to File > Settings > Build, Execution, Deployment > Toolchains
+   - Make sure your toolchain has a valid C/C++ compiler
+   - If not, install one using the package manager for your toolchain
+
+3. Try using a different generator:
+   ```powershell
+   # Try with Visual Studio generator
+   .\scripts\build.ps1
+
+   # Or try with MinGW Makefiles
+   $env:PATH = "C:\path\to\mingw\bin;$env:PATH"
+   .\scripts\build.ps1
+   ```

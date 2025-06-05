@@ -8,6 +8,28 @@
 #include <mutex>
 #include <filesystem>
 
+// Error codes
+enum ErrorCode {
+    SUCCESS = 0,
+    INVALID_INPUT = 1,
+    TOO_MANY_PARAMETERS = 2,
+    CURL_INIT_FAILED = 3,
+    CURL_REQUEST_FAILED = 4,
+    HTTP_ERROR = 5,
+    UNEXPECTED_EXCEPTION = 6
+};
+
+// Global error message buffer
+thread_local char g_lastErrorMessage[512] = {0};
+
+// Function to set the last error message
+void SetLastErrorMessage(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vsnprintf(g_lastErrorMessage, sizeof(g_lastErrorMessage), format, args);
+    va_end(args);
+}
+
 // Configuration settings
 struct ConfigSettings {
 #ifdef DEFAULT_API_URL
@@ -110,6 +132,11 @@ std::string UrlEncode(const std::string& value, CURL* curl) {
 
 extern "C"
 {
+    // Function to get the last error message
+    __declspec(dllexport) const char* GetLastErrorMessage() {
+        return g_lastErrorMessage;
+    }
+
     __declspec(dllexport) long CustomFunctionExample(const char* dataIn, char* dataOut) 
     {
         try {
@@ -121,7 +148,8 @@ extern "C"
 
             // Ensure dataIn is not null
             if (!dataIn) {
-                return 1; // Invalid input
+                SetLastErrorMessage("Invalid input: dataIn is null");
+                return INVALID_INPUT;
             }
 
             // Determine number of input parameters
@@ -130,7 +158,8 @@ extern "C"
 
             // Validate number of parameters
             if (numParameters > 100) { // Arbitrary limit for safety
-                return 1; // Too many parameters
+                SetLastErrorMessage("Too many parameters: %d (maximum is 100)", numParameters);
+                return TOO_MANY_PARAMETERS;
             }
 
             // Map to store key/value pairs
@@ -178,7 +207,8 @@ extern "C"
             // Initialize curl
             CURL* curl = curl_easy_init();
             if (!curl) {
-                return 1; // Return error code if curl initialization failed
+                SetLastErrorMessage("Failed to initialize curl");
+                return CURL_INIT_FAILED;
             }
 
             // Use RAII to ensure curl cleanup
@@ -245,7 +275,8 @@ extern "C"
 
             // Check for errors
             if (res != CURLE_OK) {
-                return 1; // Return error code
+                SetLastErrorMessage("Curl request failed: %s", curl_easy_strerror(res));
+                return CURL_REQUEST_FAILED;
             }
 
             // Get HTTP response code
@@ -254,7 +285,8 @@ extern "C"
 
             // Check if HTTP response is successful (200-299)
             if (httpCode < 200 || httpCode >= 300) {
-                return 1; // Return error code
+                SetLastErrorMessage("HTTP error: received status code %ld", httpCode);
+                return HTTP_ERROR;
             }
 
             // If CFResp=yes was in the input, return the response
@@ -278,11 +310,17 @@ extern "C"
                 memcpy(dataOut + HEADER_SIZE + KEY_SIZE, outputValue, VALUE_SIZE);
             }
 
-            return 0; // Success
+            return SUCCESS; // Success
+        }
+        catch (const std::exception& e) {
+            // Catch standard exceptions
+            SetLastErrorMessage("Unexpected exception: %s", e.what());
+            return UNEXPECTED_EXCEPTION;
         }
         catch (...) {
-            // Catch any unexpected exceptions to ensure DLL doesn't crash
-            return 1;
+            // Catch any other unexpected exceptions
+            SetLastErrorMessage("Unknown exception occurred");
+            return UNEXPECTED_EXCEPTION;
         }
     }
 }
