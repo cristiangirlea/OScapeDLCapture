@@ -11,7 +11,7 @@ mkdir -p build
 mkdir -p dist
 
 # Default values
-API_URL="https://someurl/api/index.php"
+API_URL="https://localhost/api/index.php"
 TIMEOUT=4
 CONNECT_TIMEOUT=2
 SERVER_PORT=8080
