@@ -1,1 +1,21 @@
 .idea
+# Build directories
+build/
+dist/
+cmake-build-debug/
+cmake-build-release/
+
+# Compiled Object files
+*.o
+*.obj
+*.dll
+*.so
+*.dylib
+*.exe
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Logs
+*.log
