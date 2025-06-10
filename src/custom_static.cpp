@@ -10,12 +10,7 @@
 // Error codes
 enum ErrorCode {
     SUCCESS = 0,
-    INVALID_INPUT = 1,
-    TOO_MANY_PARAMETERS = 2,
-    CURL_INIT_FAILED = 3,
-    CURL_REQUEST_FAILED = 4,
-    HTTP_ERROR = 5,
-    UNEXPECTED_EXCEPTION = 6
+    FAIL = 1
 };
 
 // Global error message buffer
@@ -31,23 +26,12 @@ void SetLastErrorMessage(const char* format, ...) {
 
 // Configuration settings - compile-time only, no runtime loading
 struct ConfigSettings {
-#ifdef DEFAULT_API_URL
-    const char* baseUrl = DEFAULT_API_URL;
-#else
-    const char* baseUrl = "https://localhost/api/index.php";
-#endif
-
-#ifdef DEFAULT_TIMEOUT
-    const long timeout = DEFAULT_TIMEOUT;
-#else
+    // Use the values from config.ini at build time
+    const char* baseUrl = "https://192.168.102.55/testoscc.php";
     const long timeout = 4;
-#endif
-
-#ifdef DEFAULT_CONNECT_TIMEOUT
-    const long connectTimeout = DEFAULT_CONNECT_TIMEOUT;
-#else
     const long connectTimeout = 2;
-#endif
+    const bool verifySSL = false; // Set to false to ignore SSL certificate validation
+    const char* sslCertFile = ""; // Path to SSL certificate file if needed
 };
 
 // Global configuration - initialized at compile time
@@ -96,6 +80,15 @@ std::string UrlEncode(const std::string& value, CURL* curl) {
     return value; // Return original if encoding fails
 }
 
+// Convert string to lowercase
+std::string ToLowerCase(const std::string& str) {
+    std::string result = str;
+    for (char& c : result) {
+        c = std::tolower(static_cast<unsigned char>(c));
+    }
+    return result;
+}
+
 extern "C"
 {
     // Function to get the last error message
@@ -103,7 +96,7 @@ extern "C"
         return g_lastErrorMessage;
     }
 
-    __declspec(dllexport) long CustomFunctionExample(const char* dataIn, char* dataOut) 
+    __declspec(dllexport) long ProcessContactCenterRequest(const char* dataIn, char* dataOut)
     {
         try {
             // Constants for parsing input/output
@@ -115,7 +108,7 @@ extern "C"
             // Ensure dataIn is not null
             if (!dataIn) {
                 SetLastErrorMessage("Invalid input: dataIn is null");
-                return INVALID_INPUT;
+                return FAIL;
             }
 
             // Determine number of input parameters
@@ -123,9 +116,9 @@ extern "C"
             const unsigned int numParameters = atoi(numParametersAsString);
 
             // Validate number of parameters
-            if (numParameters > 100) { // Arbitrary limit for safety
-                SetLastErrorMessage("Too many parameters: %d (maximum is 100)", numParameters);
-                return TOO_MANY_PARAMETERS;
+            if (numParameters > 10) { // Arbitrary limit for safety
+                SetLastErrorMessage("Too many parameters: %d (maximum is 10)", numParameters);
+                return FAIL;
             }
 
             // Map to store key/value pairs
@@ -164,8 +157,8 @@ extern "C"
                 // Store in map
                 parameters[keyStr] = valueStr;
 
-                // Check if CFResp is set to yes
-                if (keyStr == "CFResp" && valueStr == "yes") {
+                // Check if CFResp is set to yes or 1
+                if (keyStr == "CFResp" && (valueStr == "yes" || valueStr == "1")) {
                     shouldReturnResponse = true;
                 }
             }
@@ -174,7 +167,7 @@ extern "C"
             CURL* curl = curl_easy_init();
             if (!curl) {
                 SetLastErrorMessage("Failed to initialize curl");
-                return CURL_INIT_FAILED;
+                return FAIL;
             }
 
             // Use RAII to ensure curl cleanup
@@ -202,8 +195,14 @@ extern "C"
                     url += "&";
                 }
 
+                // Convert "Endpoint" to lowercase "endpoint" for compatibility
+                std::string normalizedKey = key;
+                if (ToLowerCase(normalizedKey) == "endpoint") {
+                    normalizedKey = "endpoint";
+                }
+
                 // URL encode both key and value
-                url += key + "=" + UrlEncode(value, curl);
+                url += normalizedKey + "=" + UrlEncode(value, curl);
                 firstParam = false;
             }
 
@@ -234,13 +233,29 @@ extern "C"
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseData);
 
+            // Configure SSL options
+            if (!CONFIG.verifySSL) {
+                // Disable SSL certificate verification
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+            } else if (CONFIG.sslCertFile && CONFIG.sslCertFile[0] != '\0') {
+                // Use custom certificate file
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+                curl_easy_setopt(curl, CURLOPT_CAINFO, CONFIG.sslCertFile);
+            }
+
             // Perform the request
             CURLcode res = curl_easy_perform(curl);
 
             // Check for errors
             if (res != CURLE_OK) {
                 SetLastErrorMessage("Curl request failed: %s", curl_easy_strerror(res));
-                return CURL_REQUEST_FAILED;
+                // Only return FAIL if we need to return a response (CFResp=yes)
+                // Otherwise, we don't care about the CURL errors
+                if (shouldReturnResponse) {
+                    return FAIL;
+                }
             }
 
             // Get HTTP response code
@@ -250,7 +265,13 @@ extern "C"
             // Check if HTTP response is successful (200-299)
             if (httpCode < 200 || httpCode >= 300) {
                 SetLastErrorMessage("HTTP error: received status code %ld", httpCode);
-                return HTTP_ERROR;
+                // Only return FAIL if we need to return a response (CFResp=yes)
+                // Otherwise, we don't care about the HTTP response
+                if (shouldReturnResponse) {
+                    return FAIL;
+                }
+                // If CFResp is not "yes", we don't care about the HTTP response
+                // and should return SUCCESS
             }
 
             // If CFResp=yes was in the input, return the response
@@ -279,12 +300,12 @@ extern "C"
         catch (const std::exception& e) {
             // Catch standard exceptions
             SetLastErrorMessage("Unexpected exception: %s", e.what());
-            return UNEXPECTED_EXCEPTION;
+            return FAIL;
         }
         catch (...) {
             // Catch any other unexpected exceptions
             SetLastErrorMessage("Unknown exception occurred");
-            return UNEXPECTED_EXCEPTION;
+            return FAIL;
         }
     }
 }

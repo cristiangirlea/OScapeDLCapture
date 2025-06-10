@@ -8,6 +8,7 @@
 #include <chrono>
 #include <thread>
 #include <algorithm>
+#include <curl/curl.h>
 
 // Platform-specific includes for DLL loading and networking
 #ifdef _WIN32
@@ -108,59 +109,37 @@ std::vector<char> createInputBuffer(const std::map<std::string, std::string>& pa
     return buffer;
 }
 
-// Helper function to make an HTTP request
+// Callback function for curl to write response data
+size_t HttpWriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
+    const size_t totalSize = size * nmemb;
+    userp->append(static_cast<char*>(contents), totalSize);
+    return totalSize;
+}
+
+// Structure to hold SSL information
+struct SSLInfo {
+    bool isSSL;
+    bool verifyPeer;
+    bool verifyHost;
+    std::string certInfo;
+    std::string sslVersion;
+};
+
+// Helper function to make an HTTP/HTTPS request using curl
 std::string makeHttpRequest(const std::string& host, int port, const std::string& path, 
-                           const std::map<std::string, std::string>& parameters) {
-#ifdef _WIN32
-    // Initialize Winsock
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        std::cerr << "Failed to initialize Winsock" << std::endl;
-        return "";
-    }
-#endif
-
-    // Create socket
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) {
-        std::cerr << "Failed to create socket" << std::endl;
-#ifdef _WIN32
-        WSACleanup();
-#endif
+                           const std::map<std::string, std::string>& parameters,
+                           bool useSSL = false, bool verifySSL = true, 
+                           const std::string& certFile = "", SSLInfo* sslInfo = nullptr) {
+    // Initialize curl
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        std::cerr << "Failed to initialize curl" << std::endl;
         return "";
     }
 
-    // Resolve host
-    struct hostent* server = gethostbyname(host.c_str());
-    if (server == nullptr) {
-        std::cerr << "Failed to resolve host: " << host << std::endl;
-#ifdef _WIN32
-        closesocket(sock);
-        WSACleanup();
-#else
-        close(sock);
-#endif
-        return "";
-    }
-
-    // Set up server address
-    struct sockaddr_in serverAddr;
-    std::memset(&serverAddr, 0, sizeof(serverAddr));
-    serverAddr.sin_family = AF_INET;
-    std::memcpy(&serverAddr.sin_addr.s_addr, server->h_addr, server->h_length);
-    serverAddr.sin_port = htons(port);
-
-    // Connect to server
-    if (connect(sock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
-        std::cerr << "Failed to connect to server" << std::endl;
-#ifdef _WIN32
-        closesocket(sock);
-        WSACleanup();
-#else
-        close(sock);
-#endif
-        return "";
-    }
+    // Construct URL
+    std::string protocol = useSSL ? "https" : "http";
+    std::string url = protocol + "://" + host + ":" + std::to_string(port) + path;
 
     // Construct query string
     std::string queryString;
@@ -169,50 +148,100 @@ std::string makeHttpRequest(const std::string& host, int port, const std::string
         if (!first) {
             queryString += "&";
         }
-        queryString += param.first + "=" + param.second;
+
+        // URL encode key and value
+        char* encodedKey = curl_easy_escape(curl, param.first.c_str(), static_cast<int>(param.first.length()));
+        char* encodedValue = curl_easy_escape(curl, param.second.c_str(), static_cast<int>(param.second.length()));
+
+        if (encodedKey && encodedValue) {
+            queryString += std::string(encodedKey) + "=" + std::string(encodedValue);
+        } else {
+            queryString += param.first + "=" + param.second;
+        }
+
+        if (encodedKey) curl_free(encodedKey);
+        if (encodedValue) curl_free(encodedValue);
+
         first = false;
     }
 
-    // Construct HTTP request
-    std::string request = "GET " + path;
+    // Append query string to URL
     if (!queryString.empty()) {
-        request += "?" + queryString;
+        url += "?" + queryString;
     }
-    request += " HTTP/1.1\r\n";
-    request += "Host: " + host + "\r\n";
-    request += "Connection: close\r\n";
-    request += "\r\n";
 
-    // Send request
-    if (send(sock, request.c_str(), request.length(), 0) < 0) {
-        std::cerr << "Failed to send request" << std::endl;
-#ifdef _WIN32
-        closesocket(sock);
-        WSACleanup();
-#else
-        close(sock);
-#endif
+    // Set URL
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+
+    // Set SSL options if using HTTPS
+    if (useSSL) {
+        // Configure SSL verification
+        if (!verifySSL) {
+            // Disable SSL certificate verification
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+        } else if (!certFile.empty()) {
+            // Use custom certificate file
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+            curl_easy_setopt(curl, CURLOPT_CAINFO, certFile.c_str());
+        }
+    }
+
+    // Set up response buffer
+    std::string responseData;
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, HttpWriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseData);
+
+    // Set timeout
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+
+    // Perform the request
+    CURLcode res = curl_easy_perform(curl);
+
+    // Capture SSL information if requested
+    if (sslInfo != nullptr) {
+        // Check if SSL was used
+        long usedSSL = 0;
+        curl_easy_getinfo(curl, CURLINFO_USED_SSL, &usedSSL);
+        sslInfo->isSSL = (usedSSL != 0);
+
+        // Get SSL verification settings
+        long verifyPeer = 0;
+        curl_easy_getopt(curl, CURLOPT_SSL_VERIFYPEER, &verifyPeer);
+        sslInfo->verifyPeer = (verifyPeer != 0);
+
+        long verifyHost = 0;
+        curl_easy_getopt(curl, CURLOPT_SSL_VERIFYHOST, &verifyHost);
+        sslInfo->verifyHost = (verifyHost > 0);
+
+        // Get SSL version
+        char* sslVersion = nullptr;
+        curl_easy_getinfo(curl, CURLINFO_SSL_VERIFYRESULT, &sslVersion);
+        if (sslVersion) {
+            sslInfo->sslVersion = sslVersion;
+        }
+
+        // Get certificate info
+        char* certInfo = nullptr;
+        curl_easy_getinfo(curl, CURLINFO_CERTINFO, &certInfo);
+        if (certInfo) {
+            sslInfo->certInfo = certInfo;
+        }
+    }
+
+    // Check for errors
+    if (res != CURLE_OK) {
+        std::cerr << "Curl request failed: " << curl_easy_strerror(res) << std::endl;
+        curl_easy_cleanup(curl);
         return "";
     }
 
-    // Receive response
-    std::string response;
-    char buffer[4096];
-    int bytesRead;
-    while ((bytesRead = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0) {
-        buffer[bytesRead] = '\0';
-        response += buffer;
-    }
-
     // Clean up
-#ifdef _WIN32
-    closesocket(sock);
-    WSACleanup();
-#else
-    close(sock);
-#endif
+    curl_easy_cleanup(curl);
 
-    return response;
+    return responseData;
 }
 
 // Helper function to extract response body from HTTP response
@@ -243,6 +272,12 @@ int main(int argc, char* argv[]) {
 #endif
     bool testDll = true;
     bool testServer = true;
+    bool useHttps = false;
+    bool verifySSL = true;
+    std::string certFile = "";
+
+    // Initialize curl globally
+    curl_global_init(CURL_GLOBAL_DEFAULT);
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -259,6 +294,13 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--test-server-only") {
             testDll = false;
             testServer = true;
+        } else if (arg == "--use-https") {
+            useHttps = true;
+        } else if (arg == "--no-verify-ssl") {
+            verifySSL = false;
+        } else if (arg == "--cert-file" && i + 1 < argc) {
+            certFile = argv[++i];
+            verifySSL = true;  // If cert file is specified, enable verification
         }
     }
 
@@ -433,17 +475,38 @@ int main(int argc, char* argv[]) {
 
     // Test server
     if (testServer) {
-        std::cout << "\n=== Testing Server: " << serverHost << ":" << serverPort << " ===" << std::endl;
+        std::string protocol = useHttps ? "HTTPS" : "HTTP";
+        std::cout << "\n=== Testing Server: " << protocol << "://" << serverHost << ":" << serverPort << " ===" << std::endl;
+        std::cout << "SSL Verification: " << (verifySSL ? "Enabled" : "Disabled") << std::endl;
+        if (!certFile.empty()) {
+            std::cout << "Using Certificate File: " << certFile << std::endl;
+        }
 
         // Check if server is running
         std::cout << "Checking if server is running..." << std::endl;
-        std::string response = makeHttpRequest(serverHost, serverPort, "/", {});
+        SSLInfo sslInfo;
+        std::string response = makeHttpRequest(serverHost, serverPort, "/", {}, useHttps, verifySSL, certFile, &sslInfo);
         if (response.empty()) {
             std::cerr << "Failed to connect to server. Make sure the server is running." << std::endl;
+            curl_global_cleanup();
             return 1;
         }
 
         std::cout << "Server is running" << std::endl;
+
+        // Report SSL status
+        if (useHttps) {
+            std::cout << "SSL Status:" << std::endl;
+            std::cout << "  - SSL Used: " << (sslInfo.isSSL ? "Yes" : "No") << std::endl;
+            std::cout << "  - Peer Verification: " << (sslInfo.verifyPeer ? "Enabled" : "Disabled") << std::endl;
+            std::cout << "  - Host Verification: " << (sslInfo.verifyHost ? "Enabled" : "Disabled") << std::endl;
+            if (!sslInfo.sslVersion.empty()) {
+                std::cout << "  - SSL Version: " << sslInfo.sslVersion << std::endl;
+            }
+            if (!sslInfo.certInfo.empty()) {
+                std::cout << "  - Certificate Info: " << sslInfo.certInfo << std::endl;
+            }
+        }
 
         // Run test cases
         int passedTests = 0;
@@ -459,12 +522,25 @@ int main(int argc, char* argv[]) {
                 serverParams[key] = param.second;
             }
 
-            // Make HTTP request
-            std::cout << "Making HTTP request..." << std::endl;
-            std::string response = makeHttpRequest(serverHost, serverPort, "/api/index.php", serverParams);
+            // Make HTTP/HTTPS request
+            std::cout << "Making " << protocol << " request..." << std::endl;
+            SSLInfo requestSslInfo;
+            std::string response = makeHttpRequest(serverHost, serverPort, "/api/index.php", 
+                                                 serverParams, useHttps, verifySSL, certFile, 
+                                                 &requestSslInfo);
 
-            // Extract response body
-            std::string responseBody = extractResponseBody(response);
+            // For HTTPS requests, report SSL status
+            if (useHttps) {
+                std::cout << "SSL Status for this request:" << std::endl;
+                std::cout << "  - SSL Used: " << (requestSslInfo.isSSL ? "Yes" : "No") << std::endl;
+                std::cout << "  - Certificate Verification: " << (requestSslInfo.verifyPeer ? "Enabled" : "Disabled") << std::endl;
+            }
+
+            // Extract response body if it's an HTTP response with headers
+            std::string responseBody = response;
+            if (response.find("HTTP/") == 0) {
+                responseBody = extractResponseBody(response);
+            }
 
             // Print response
             std::cout << "Response body:" << std::endl;
@@ -494,6 +570,8 @@ int main(int argc, char* argv[]) {
 
         // Print summary
         std::cout << "\nServer Test Summary: " << passedTests << " of " << testCases.size() << " tests passed" << std::endl;
+        std::cout << "Protocol used: " << protocol << std::endl;
+        std::cout << "SSL Verification: " << (verifySSL ? "Enabled" : "Disabled") << std::endl;
     }
 
     // Print overall summary
@@ -501,6 +579,9 @@ int main(int argc, char* argv[]) {
         std::cout << "\n=== Overall Test Summary ===" << std::endl;
         std::cout << "Completed testing of both DLL and server" << std::endl;
     }
+
+    // Clean up curl resources
+    curl_global_cleanup();
 
     return 0;
 }

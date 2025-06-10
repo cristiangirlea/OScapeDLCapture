@@ -11,12 +11,7 @@
 // Error codes
 enum ErrorCode {
     SUCCESS = 0,
-    INVALID_INPUT = 1,
-    TOO_MANY_PARAMETERS = 2,
-    CURL_INIT_FAILED = 3,
-    CURL_REQUEST_FAILED = 4,
-    HTTP_ERROR = 5,
-    UNEXPECTED_EXCEPTION = 6
+    FAIL = 1
 };
 
 // Global error message buffer
@@ -49,6 +44,14 @@ struct ConfigSettings {
 #else
     long connectTimeout = 2;
 #endif
+
+#ifdef DEFAULT_VERIFY_SSL
+    bool verifySSL = DEFAULT_VERIFY_SSL;
+#else
+    bool verifySSL = true;
+#endif
+
+    std::string sslCertFile = "";
 };
 
 // Function to read configuration from INI file
@@ -83,6 +86,16 @@ ConfigSettings ReadConfig() {
 
     // Read connect timeout
     config.connectTimeout = GetPrivateProfileInt("api", "connect_timeout", config.connectTimeout, configPath.c_str());
+
+    // Read SSL verification setting (1 = verify, 0 = ignore)
+    int verifySSL = GetPrivateProfileInt("api", "verify_ssl", config.verifySSL ? 1 : 0, configPath.c_str());
+    config.verifySSL = (verifySSL != 0);
+
+    // Read SSL certificate file path
+    char sslCertFile[256] = {0};
+    GetPrivateProfileString("api", "ssl_cert_file", config.sslCertFile.c_str(), 
+                           sslCertFile, sizeof(sslCertFile), configPath.c_str());
+    config.sslCertFile = sslCertFile;
 
     return config;
 }
@@ -149,7 +162,7 @@ extern "C"
             // Ensure dataIn is not null
             if (!dataIn) {
                 SetLastErrorMessage("Invalid input: dataIn is null");
-                return INVALID_INPUT;
+                return FAIL;
             }
 
             // Determine number of input parameters
@@ -159,7 +172,7 @@ extern "C"
             // Validate number of parameters
             if (numParameters > 100) { // Arbitrary limit for safety
                 SetLastErrorMessage("Too many parameters: %d (maximum is 100)", numParameters);
-                return TOO_MANY_PARAMETERS;
+                return FAIL;
             }
 
             // Map to store key/value pairs
@@ -208,7 +221,7 @@ extern "C"
             CURL* curl = curl_easy_init();
             if (!curl) {
                 SetLastErrorMessage("Failed to initialize curl");
-                return CURL_INIT_FAILED;
+                return FAIL;
             }
 
             // Use RAII to ensure curl cleanup
@@ -270,13 +283,25 @@ extern "C"
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseData);
 
+            // Configure SSL options
+            if (!config.verifySSL) {
+                // Disable SSL certificate verification
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+            } else if (!config.sslCertFile.empty()) {
+                // Use custom certificate file
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+                curl_easy_setopt(curl, CURLOPT_CAINFO, config.sslCertFile.c_str());
+            }
+
             // Perform the request
             CURLcode res = curl_easy_perform(curl);
 
             // Check for errors
             if (res != CURLE_OK) {
                 SetLastErrorMessage("Curl request failed: %s", curl_easy_strerror(res));
-                return CURL_REQUEST_FAILED;
+                return FAIL;
             }
 
             // Get HTTP response code
@@ -286,7 +311,7 @@ extern "C"
             // Check if HTTP response is successful (200-299)
             if (httpCode < 200 || httpCode >= 300) {
                 SetLastErrorMessage("HTTP error: received status code %ld", httpCode);
-                return HTTP_ERROR;
+                return FAIL;
             }
 
             // If CFResp=yes was in the input, return the response
@@ -315,12 +340,12 @@ extern "C"
         catch (const std::exception& e) {
             // Catch standard exceptions
             SetLastErrorMessage("Unexpected exception: %s", e.what());
-            return UNEXPECTED_EXCEPTION;
+            return FAIL;
         }
         catch (...) {
             // Catch any other unexpected exceptions
             SetLastErrorMessage("Unknown exception occurred");
-            return UNEXPECTED_EXCEPTION;
+            return FAIL;
         }
     }
 }

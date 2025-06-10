@@ -24,6 +24,7 @@ The DLL receives key/value input parameters, performs an HTTP GET request to a c
 - [Configuration](#configuration)
   - [Runtime Configuration](#runtime-configuration)
   - [Compile-Time Configuration](#compile-time-configuration)
+  - [SSL Configuration](#ssl-configuration)
 - [Build Automation](#build-automation)
   - [Windows (PowerShell)](#windows-powershell)
   - [Linux/macOS (Bash)](#linuxmacos-bash)
@@ -443,6 +444,38 @@ This approach is ideal when you want to:
 - Maximize performance (no file I/O)
 - Create self-contained DLLs that can be distributed without config files
 - Ensure consistent behavior across deployments
+
+### SSL Configuration
+
+The project supports SSL/TLS for secure communication with the server. For detailed information about SSL configuration options, see the [SSL Configuration Guide](SSL.md).
+
+#### Runtime Configuration (config.ini)
+
+```ini
+[api]
+base_url=https://example.com/api/index.php
+verify_ssl=1
+ssl_cert_file=C:\path\to\certificate.crt
+```
+
+- `verify_ssl` - Set to `1` to enable SSL certificate verification, `0` to disable it
+- `ssl_cert_file` - Path to the SSL certificate file to use for verification (only used if `verify_ssl=1`)
+
+#### Compile-Time Configuration
+
+```powershell
+.\scripts\build.ps1 -VerifySSL $true -SSLCertFile "C:\path\to\certificate.crt"
+```
+
+#### Test Certificate Generation
+
+The project includes a script to generate self-signed certificates for testing:
+
+```powershell
+.\scripts\generate_cert.ps1
+# Or during build
+.\scripts\build.ps1 -GenerateTestCertificate
+```
 
 ## 🛠️ Build Automation
 

@@ -6,12 +6,15 @@ param(
     [int]$Timeout = 4,
     [int]$ConnectTimeout = 2,
     [int]$ServerPort = 8080,
+    [bool]$VerifySSL = $true,
+    [string]$SSLCertFile = "",
     [string]$BuildType = "Release",
     [ValidateSet("Runtime", "Static", "Both")]
     [string]$ConfigType = "Both",
     [switch]$BuildTools = $true,
     [switch]$BuildGoServer = $false,
-    [switch]$BuildContactCenterSimulator = $false
+    [switch]$BuildContactCenterSimulator = $false,
+    [switch]$GenerateTestCertificate = $false
 )
 
 # Change to the root directory (script is in scripts/ folder)
@@ -33,11 +36,14 @@ Write-Host "API URL: $ApiUrl"
 Write-Host "Timeout: $Timeout seconds"
 Write-Host "Connect Timeout: $ConnectTimeout seconds"
 Write-Host "Server Port: $ServerPort"
+Write-Host "Verify SSL: $VerifySSL"
+Write-Host "SSL Certificate File: $SSLCertFile"
 Write-Host "Build Type: $BuildType"
 Write-Host "Configuration Type: $ConfigType (Runtime = config.ini support, Static = compile-time only)"
 Write-Host "Build Tools: $BuildTools"
 Write-Host "Build Go Server: $BuildGoServer"
 Write-Host "Build Contact Center Simulator: $BuildContactCenterSimulator"
+Write-Host "Generate Test Certificate: $GenerateTestCertificate"
 
 # Check if CMake is installed
 $cmakeInstalled = Get-Command "cmake" -ErrorAction SilentlyContinue
@@ -46,6 +52,30 @@ if (-not $cmakeInstalled) {
     Write-Host "Please install CMake from https://cmake.org/download/ and make sure it's in your PATH." -ForegroundColor Red
     Write-Host "Alternatively, you can add the CMake bin directory to your PATH environment variable." -ForegroundColor Red
     exit 1
+}
+
+# Generate test certificate if requested
+if ($GenerateTestCertificate) {
+    Write-Host "Generating test certificate..." -ForegroundColor Yellow
+    $certDir = Join-Path $rootDir "certs"
+    $certScript = Join-Path $scriptDir "generate_cert.ps1"
+
+    # Create certificate directory if it doesn't exist
+    if (-not (Test-Path $certDir)) {
+        New-Item -ItemType Directory -Path $certDir | Out-Null
+    }
+
+    # Run the certificate generation script
+    & $certScript -OutputDir $certDir -CertName "test_cert" -CommonName "localhost"
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Failed to generate test certificate." -ForegroundColor Red
+        exit 1
+    }
+
+    # Set the SSL certificate file path to the generated certificate
+    $SSLCertFile = Join-Path $certDir "test_cert.crt"
+    Write-Host "Using generated certificate: $SSLCertFile" -ForegroundColor Green
 }
 
 # Configure CMake
@@ -918,10 +948,11 @@ if ($ConfigType -eq "Static" -or $ConfigType -eq "Both") {
 
 # Build the test tools if requested
 if ($BuildTools) {
-    Write-Host "Building test server and client..."
+    Write-Host "Building test server, client, and static DLL test..."
     # Use quoted BuildType to avoid issues with Ninja generator
     cmake --build build --config "$BuildType" --target TestServer
     cmake --build build --config "$BuildType" --target TestClient
+    cmake --build build --config "$BuildType" --target test_static_dll
 }
 
 # Build the Go server if requested
@@ -1086,6 +1117,19 @@ if ($BuildTools) {
         $testClientFound = $true
     }
 
+    # Try different possible paths for test_static_dll.exe
+    $testStaticDllFound = $false
+    if (Test-Path "build\bin\test_static_dll.exe") {
+        Copy-Item "build\bin\test_static_dll.exe" -Destination "dist\tools\" -Force
+        $testStaticDllFound = $true
+    } elseif (Test-Path "build\bin\Release\test_static_dll.exe") {
+        Copy-Item "build\bin\Release\test_static_dll.exe" -Destination "dist\tools\" -Force
+        $testStaticDllFound = $true
+    } elseif (Test-Path "build\bin\Debug\test_static_dll.exe") {
+        Copy-Item "build\bin\Debug\test_static_dll.exe" -Destination "dist\tools\" -Force
+        $testStaticDllFound = $true
+    }
+
     if (-not $testServerFound) {
         Write-Host "Warning: TestServer.exe not found. Build may have failed." -ForegroundColor Yellow
     }
@@ -1094,7 +1138,11 @@ if ($BuildTools) {
         Write-Host "Warning: TestClient.exe not found. Build may have failed." -ForegroundColor Yellow
     }
 
-    if ($testServerFound -or $testClientFound) {
+    if (-not $testStaticDllFound) {
+        Write-Host "Warning: test_static_dll.exe not found. Build may have failed." -ForegroundColor Yellow
+    }
+
+    if ($testServerFound -or $testClientFound -or $testStaticDllFound) {
         Write-Host "Test tools copied to dist\tools\"
     }
 }

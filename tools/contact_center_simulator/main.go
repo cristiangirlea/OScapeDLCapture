@@ -954,6 +954,10 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
                     html += '<li><strong>Server URL:</strong> ' + result.serverUrl + '</li>';
                     html += '<li><strong>Status Code:</strong> ' + result.statusCode + '</li>';
                     html += '<li><strong>Response Time:</strong> ' + result.responseTime + 'ms</li>';
+                    html += '<li><strong>Protocol:</strong> ' + (result.isHttps ? 'HTTPS' : 'HTTP') + '</li>';
+                    if (result.isHttps) {
+                        html += '<li><strong>SSL Verification:</strong> ' + (result.sslVerified ? 'Enabled' : 'Disabled') + '</li>';
+                    }
                     html += '</ul>';
                 } else {
                     html += '<p class="error">Server connection failed!</p>';
@@ -1133,6 +1137,8 @@ type ServerConnectionResult struct {
 	StatusCode   int    `json:"statusCode,omitempty"`
 	ResponseTime int64  `json:"responseTime,omitempty"`
 	Error        string `json:"error,omitempty"`
+	IsHTTPS      bool   `json:"isHttps"`
+	SSLVerified  bool   `json:"sslVerified,omitempty"`
 }
 
 // handleServerConnection handles requests to check server connection
@@ -1173,6 +1179,38 @@ func handleServerConnection(w http.ResponseWriter, r *http.Request) {
 	// Create result
 	result := ServerConnectionResult{
 		ServerUrl: serverURL,
+		IsHTTPS:   strings.HasPrefix(strings.ToLower(serverURL), "https://"),
+	}
+
+	// Check if SSL verification is enabled in config.ini
+	if result.IsHTTPS {
+		// Default to true unless explicitly disabled
+		result.SSLVerified = true
+
+		// Check config.ini for verify_ssl setting
+		if strings.Contains(strings.ToLower(dllPath), "customdll.dll") && !strings.Contains(strings.ToLower(dllPath), "static") {
+			configPath := filepath.Join(filepath.Dir(dllPath), "config.ini")
+			if _, err := os.Stat(configPath); err == nil {
+				// Read the config.ini file to get the verify_ssl setting
+				configData, err := os.ReadFile(configPath)
+				if err == nil {
+					configStr := string(configData)
+					// Look for verify_ssl in the config
+					for _, line := range strings.Split(configStr, "\n") {
+						line = strings.TrimSpace(line)
+						if strings.HasPrefix(line, "verify_ssl=") {
+							value := strings.TrimSpace(strings.TrimPrefix(line, "verify_ssl="))
+							// If verify_ssl is 0, SSL verification is disabled
+							if value == "0" {
+								result.SSLVerified = false
+								log.Printf("SSL verification is disabled in config.ini")
+							}
+							break
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// Check server connection

@@ -17,6 +17,8 @@ import (
 const (
 	DefaultPort = 8080
 	DefaultLogDir = "logs"
+	DefaultCertFile = ""
+	DefaultKeyFile = ""
 )
 
 // Global loggers
@@ -30,6 +32,8 @@ func main() {
 	// Parse command line flags
 	port := flag.Int("port", DefaultPort, "Port to listen on")
 	logDir := flag.String("logdir", DefaultLogDir, "Directory to store log files")
+	certFile := flag.String("cert", DefaultCertFile, "TLS certificate file for HTTPS (leave empty for HTTP)")
+	keyFile := flag.String("key", DefaultKeyFile, "TLS key file for HTTPS (leave empty for HTTP)")
 	flag.Parse()
 
 	// Create log directory if it doesn't exist
@@ -85,14 +89,27 @@ func main() {
 	mainLogger.Printf("Logging error responses to %s", errorLogFilePath)
 	mainLogger.Printf("Logging DLL data to %s", dataLogFilePath)
 
-	// Register handlers
-	http.HandleFunc("/", handleRoot)
-	http.HandleFunc("/api/index.php", handleAPI)
+ // Register handlers
+ http.HandleFunc("/", handleRoot)
+ http.HandleFunc("/api/index.php", handleAPI)
+ http.HandleFunc("/testoscc.php", handleAPI) // Add handler for testoscc.php endpoint
 
 	// Start server
 	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("Starting server on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, nil))
+
+	// Check if we should use HTTPS
+	useHTTPS := *certFile != "" && *keyFile != ""
+
+	if useHTTPS {
+		log.Printf("Starting HTTPS server on %s", addr)
+		log.Printf("Using certificate file: %s", *certFile)
+		log.Printf("Using key file: %s", *keyFile)
+		log.Fatal(http.ListenAndServeTLS(addr, *certFile, *keyFile, nil))
+	} else {
+		log.Printf("Starting HTTP server on %s", addr)
+		log.Printf("To use HTTPS, provide certificate and key files with -cert and -key flags")
+		log.Fatal(http.ListenAndServe(addr, nil))
+	}
 }
 
 // getCaseInsensitiveFormValue gets a form value in a case-insensitive manner
@@ -211,7 +228,7 @@ func handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	// Process based on endpoint
 	switch strings.ToLower(endpoint) {
-	case "procesaredate_1":
+	case "procesaredate_1", "procesaredate", "procesaredate3", "procesaredate4":
 		handleProcessareDate(w, r)
 	case "getinfo":
 		handleGetInfo(w, r)

@@ -1,3 +1,3 @@
 module go-server
 
-go 1.20
+go 1.24
