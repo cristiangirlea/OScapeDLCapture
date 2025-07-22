@@ -726,3 +726,9 @@ If you're using Ninja and the build fails with errors, try the following:
    $env:PATH = "C:\path\to\mingw\bin;$env:PATH"
    .\scripts\build.ps1
    ```
+
+## 💸 Commercial Use
+
+This project is licensed under the [Apache License 2.0](./LICENSE).  
+If you're using it commercially and would like to support its development, consider [sponsoring me](https://github.com/sponsors/yourusername).
+
